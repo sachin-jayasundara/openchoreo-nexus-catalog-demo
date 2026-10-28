@@ -1,0 +1,8 @@
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: nexus-catalog-demo-limited
+  description: Fallback for portals that reject Domain and Group entities. Teams and the Nexus namespaces are missing, so owner and namespace links do not resolve.
+spec:
+  targets:
+    - ./catalog/nexus-catalog-without-domains-groups.yaml

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nexus Catalog insights · OpenChoreo demo</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#272b35; --text:#e6e8ee; --muted:#9aa1b2; --accent:#7c5cff;
+          --crit:#e5484d; --high:#f76b15; --med:#ffc53d; --low:#3e9bff; --ok:#30a46c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; gap:24px; align-items:center; padding:14px 24px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:16px; margin:0; font-weight:600; white-space:nowrap; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
+  nav a { color:var(--muted); text-decoration:none; padding:6px 10px; border-radius:6px; }
+  nav a.active, nav a:hover { color:var(--text); background:#232734; }
+  main { padding:24px; max-width:1400px; margin:0 auto; }
+  .note { color:var(--muted); font-size:12px; margin:0 0 18px; }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); margin-bottom:20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:26px; font-weight:600; margin-top:4px; }
+  h2 { font-size:15px; margin:26px 0 10px; } h3 { font-size:14px; margin:18px 0 8px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; cursor:pointer; user-select:none; background:#1b1f28; }
+  tr:last-child td { border-bottom:none; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  a { color:#a594ff; }
+  .sev { display:inline-block; min-width:26px; padding:1px 6px; border-radius:5px; text-align:center; font-weight:600; font-size:12px; color:#111; }
+  .sev.c { background:var(--crit); color:#fff; } .sev.h { background:var(--high); } .sev.m { background:var(--med); } .sev.l { background:var(--low); color:#fff; }
+  .sev.zero { background:#2a2f3a; color:var(--muted); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.bad { color:var(--crit); border-color:var(--crit); } .pill.warn { color:var(--med); border-color:var(--med); }
+  .bar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:#2a2f3a; margin:8px 0 4px; }
+  .bar span { display:block; height:100%; }
+  .progress { width:110px; height:8px; background:#2a2f3a; border-radius:4px; display:inline-block; vertical-align:middle; margin-right:8px; overflow:hidden; }
+  .progress span { display:block; height:100%; background:var(--accent); }
+  .filters { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  input, select { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; }
+  input { min-width:260px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:18px; } @media (max-width:900px){ .two { grid-template-columns:1fr; } }
+  .muted { color:var(--muted); }
+  .crit-list li { margin:3px 0; } .crit-list { padding-left:18px; margin:6px 0; }
+  .st-satisfied { color:var(--ok); } .st-excluded { color:var(--low); } .st-missing { color:var(--crit); } .st-warning { color:var(--med); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nexus Catalog · insights</h1>
+  <nav id="nav">
+    <a href="#overview">Overview</a><a href="#security">Vulnerabilities</a><a href="#readiness">Service Readiness</a>
+    <a href="#services">Services</a><a href="#parents">Capabilities &amp; applications</a><a href="#teams">Teams</a><a href="#docs">Documentation</a>
+  </nav>
+</header>
+<main id="app"></main>
+<script>
+const DATA = /*__NEXUS_DATA__*/null;
+const S = DATA.services, byName = Object.fromEntries(S.map(s => [s.name, s]));
+const SEV = ["critical", "high", "medium", "low"], SEVC = {critical:"c", high:"h", medium:"m", low:"l"};
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sev = (n, s) => `<span class="sev ${n ? SEVC[s] : "zero"}">${n}</span>`;
+const sevCells = v => SEV.map(s => `<td class="num">${sev(v[s], s)}</td>`).join("");
+const sevHead = SEV.map(s => `<th class="num">${s[0].toUpperCase() + s.slice(1)}</th>`).join("");
+const roll = list => { const t = {critical:0, high:0, medium:0, low:0}; list.forEach(s => SEV.forEach(k => t[k] += s.vulnerabilities[k])); t.open = SEV.reduce((a, k) => a + t[k], 0); t.withCritical = list.filter(s => s.vulnerabilities.critical).length; return t; };
+const risk = v => v.critical * 100 + v.high * 10 + v.medium + v.low * 0.1;
+const parentTitle = s => s.parent ? (s.parentKind === "application" ? DATA.applications : DATA.capabilities)[s.parent].title : "—";
+const parentLink = s => s.parent ? `<a href="#parent=${s.parentKind}:${s.parent}">${esc(parentTitle(s))}</a>` : `<span class="muted">none</span>`;
+const teamLink = t => `<a href="#team=${t}">${esc(DATA.teams[t]?.title || t)}</a>`;
+const svcLink = s => `<a href="#service=${s.name}">${esc(s.title)}</a>`;
+const stageLabel = st => DATA.stageLabels[st] || "—";
+function current(s) { const r = s.readiness; return r.currentStage ? r.stages[r.currentStage] : null; }
+function readinessCell(s) {
+  const r = s.readiness, c = current(s);
+  if (!r.inScope) return `<span class="pill">not applicable</span>`;
+  if (!c) return `<span class="pill warn">no parent stage</span>`;
+  return `<span class="progress"><span style="width:${c.percent}%"></span></span>${c.percent}% <span class="pill ${c.passed ? "ok" : "bad"}">${c.passed ? "ready" : c.missing + " missing"}</span>`;
+}
+function sevBar(t) {
+  const total = SEV.reduce((a, k) => a + t[k], 0) || 1, col = {critical:"var(--crit)", high:"var(--high)", medium:"var(--med)", low:"var(--low)"};
+  return `<div class="bar">${SEV.map(k => `<span style="width:${100 * t[k] / total}%;background:${col[k]}" title="${k}: ${t[k]}"></span>`).join("")}</div>`;
+}
+function kpis(items) { return `<div class="grid">${items.map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>`; }
+function sortable(table) {
+  table.querySelectorAll("th").forEach((th, i) => th.onclick = () => {
+    const rows = [...table.tBodies[0].rows], dir = th.dataset.dir === "asc" ? "desc" : "asc";
+    table.querySelectorAll("th").forEach(h => delete h.dataset.dir); th.dataset.dir = dir;
+    const val = r => { const t = r.cells[i].innerText.trim(); const n = parseFloat(t); return isNaN(n) ? t.toLowerCase() : n; };
+    rows.sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * (dir === "asc" ? 1 : -1)).forEach(r => table.tBodies[0].appendChild(r));
+  });
+}
+function serviceTable(list) {
+  return `<table><thead><tr><th>Service</th><th>Type</th><th>Lifecycle</th><th>Belongs to</th><th>Owning team</th><th>Readiness (current stage)</th>${sevHead}</tr></thead><tbody>${
+    list.map(s => `<tr><td>${svcLink(s)}</td><td>${esc(s.type)}</td><td>${esc(s.lifecycle)}</td><td>${parentLink(s)}</td><td>${teamLink(s.team)}</td><td>${readinessCell(s)}</td>${sevCells(s.vulnerabilities)}</tr>`).join("")}</tbody></table>`;
+}
+function rollTable(groups, label) {
+  return `<table><thead><tr><th>${label}</th><th class="num">Services</th>${sevHead}<th class="num">Open</th><th class="num">With critical</th></tr></thead><tbody>${
+    groups.map(([link, list]) => { const t = roll(list); return `<tr><td>${link}</td><td class="num">${list.length}</td>${sevCells(t)}<td class="num">${t.open}</td><td class="num">${t.withCritical}</td></tr>`; }).join("")}</tbody></table>`;
+}
+const docLinks = docs => Object.entries(docs).map(([d, u]) => u ? `<a href="${esc(u)}">${esc(d)}</a>` : esc(d)).join(" · ");
+const note = () => `<p class="note">Catalog snapshot ${esc(DATA.catalogCommit)} · generated ${esc(DATA.generatedAt)} · ${esc(DATA.notes)}</p>`;
+
+const views = {
+  overview() {
+    const t = roll(S), inScope = S.filter(s => s.readiness.inScope), staged = inScope.filter(current), ready = staged.filter(s => current(s).passed);
+    return `${note()}${kpis([["Platform capabilities", DATA.counts.platformCapabilities], ["Applications", DATA.counts.applications], ["Services", DATA.counts.services], ["Teams", DATA.counts.teams], ["Readiness criteria", DATA.counts.criteria]])}
+      <div class="two"><div class="card"><div class="k">Open vulnerabilities (mock)</div><div class="v">${t.open}</div>${sevBar(t)}
+        <div>${SEV.map(k => `${sev(t[k], k)} ${k}`).join(" &nbsp; ")}</div><p class="muted">${t.withCritical} services have critical findings. <a href="#security">Global summary</a></p></div>
+      <div class="card"><div class="k">Service Readiness</div><div class="v">${ready.length} / ${staged.length}</div>
+        <p class="muted">services ready for their current stage. ${inScope.length} of ${S.length} services are subject to criteria (service type <code>kairos-component</code>). <a href="#readiness">Details</a></p></div></div>
+      <h2>Highest risk services</h2>${serviceTable([...S].sort((a, b) => risk(b.vulnerabilities) - risk(a.vulnerabilities)).slice(0, 10))}`;
+  },
+  security() {
+    const t = roll(S), groupBy = (key, link) => Object.entries(S.reduce((m, s) => ((m[key(s)] ||= []).push(s), m), {})).map(([k, l]) => [link(k, l[0]), l]).sort((a, b) => risk(roll(b[1])) - risk(roll(a[1])));
+    return `${note()}${kpis([["Critical", t.critical], ["High", t.high], ["Medium", t.medium], ["Low", t.low], ["Open findings", t.open], ["Services with critical", t.withCritical]])}${sevBar(t)}
+      <div class="two"><div><h2>By platform capability or application</h2>${rollTable(groupBy(s => s.parentKind ? s.parentKind + ":" + s.parent : "none", (k, s) => s.parent ? parentLink(s) : "<span class='muted'>No parent</span>"), "Parent")}</div>
+      <div><h2>By owning team</h2>${rollTable(groupBy(s => s.team, k => teamLink(k)), "Team")}</div></div>
+      <h2>By cluster</h2>${rollTable(Object.keys(DATA.clusters).map(c => [`<a href="#cluster=${c}">${esc(DATA.clusters[c].title)}</a>`, S.filter(s => s.deployments.some(d => d.cluster === c))]), "Cluster")}
+      <h2>All services by risk</h2>${serviceTable([...S].sort((a, b) => risk(b.vulnerabilities) - risk(a.vulnerabilities)))}`;
+  },
+  readiness() {
+    const inScope = S.filter(s => s.readiness.inScope), missed = {};
+    inScope.filter(current).forEach(s => current(s).criteria.filter(c => c.status === "missing").forEach(c => missed[c.name] = (missed[c.name] || 0) + 1));
+    const stageCount = st => inScope.filter(s => s.readiness.currentStage === st);
+    return `${note()}${kpis([["In scope", inScope.length], ...Object.keys(DATA.stageLabels).map(st => [DATA.stageLabels[st], `${stageCount(st).filter(s => current(s).passed).length} / ${stageCount(st).length} ready`]), ["No parent stage", inScope.filter(s => !current(s)).length]])}
+      <div class="two"><div><h2>Services subject to criteria</h2>${serviceTable([...inScope].sort((a, b) => (current(b)?.percent ?? -1) - (current(a)?.percent ?? -1)))}</div>
+      <div><h2>Most often missing at the current stage</h2><table><thead><tr><th>Criterion</th><th class="num">Services</th></tr></thead><tbody>${
+        Object.entries(missed).sort((a, b) => b[1] - a[1]).map(([n, c]) => `<tr><td>${esc(n)}</td><td class="num">${c}</td></tr>`).join("")}</tbody></table></div></div>`;
+  },
+  services() {
+    const opts = (vals, label) => `<option value="">${label}</option>` + [...new Set(vals)].sort().map(v => `<option>${esc(v)}</option>`).join("");
+    return `${note()}<div class="filters"><input id="q" placeholder="Search services"><select id="type">${opts(S.map(s => s.type), "All types")}</select><select id="life">${opts(S.map(s => s.lifecycle), "All lifecycles")}</select>
+      <select id="team">${opts(S.map(s => s.team), "All teams")}</select><select id="rd"><option value="">All readiness</option><option>ready</option><option>not ready</option><option>not applicable</option></select></div><div id="list"></div>`;
+  },
+  parents() {
+    const rows = (src, kind) => Object.entries(src).map(([k, v]) => [`<a href="#parent=${kind}:${k}">${esc(v.title)}</a> <span class="pill">${esc(stageLabel(v.availability))}</span>`, S.filter(s => s.parentKind === kind && s.parent === k)]);
+    return `${note()}<h2>Platform capabilities</h2>${rollTable(rows(DATA.capabilities, "platform-capability"), "Platform capability")}<h2>Applications</h2>${rollTable(rows(DATA.applications, "application"), "Application")}`;
+  },
+  teams() { return `${note()}${rollTable(Object.keys(DATA.teams).map(t => [teamLink(t), S.filter(s => s.team === t)]), "Team")}`; },
+  docs() {
+    return `${note()}<p class="muted">Documentation stays in the Nexus Catalog repository. This lists the documents each platform capability has.</p><table><thead><tr><th>Platform capability</th><th>Availability</th><th>Documents</th></tr></thead><tbody>${
+      Object.entries(DATA.capabilities).map(([k, v]) => `<tr><td><a href="#parent=platform-capability:${k}">${esc(v.title)}</a></td><td>${esc(stageLabel(v.availability))}</td><td>${docLinks(v.docs)}</td></tr>`).join("")}</tbody></table>`;
+  },
+  service(name) {
+    const s = byName[name]; if (!s) return `<p>Unknown service ${esc(name)}</p>`;
+    const v = s.vulnerabilities, r = s.readiness;
+    const stages = Object.entries(r.stages).map(([st, x]) => `<div class="card"><h3>${esc(stageLabel(st))}${st === r.currentStage ? " · current stage" : ""}</h3>
+      <span class="progress"><span style="width:${x.percent}%"></span></span>${x.met}/${x.applicable} met (${x.percent}%) <span class="pill ${x.passed ? "ok" : "bad"}">${x.passed ? "ready" : x.missing + " missing"}</span>
+      <ul class="crit-list">${x.criteria.map(c => `<li class="st-${c.status}">${esc(c.status)} · ${esc(c.name)} <span class="muted">(${esc(c.level)}${c.reason ? ", " + esc(c.reason) : ""})</span></li>`).join("")}</ul></div>`).join("");
+    return `${note()}<h2>${esc(s.title)} <span class="pill">${esc(s.type)}</span> <span class="pill">${esc(s.lifecycle)}</span></h2><p>${esc(s.description)}</p>
+      <table><tbody><tr><th>Owning team</th><td>${teamLink(s.team)}</td><th>Belongs to</th><td>${parentLink(s)} ${s.availability ? `<span class="pill">${esc(stageLabel(s.availability))}</span>` : ""}</td></tr>
+      <tr><th>Repository</th><td>${s.repository ? `<a href="${esc(s.repository)}">${esc(s.repository)}</a>` : `<span class="muted">not published</span>`}</td><th>Managed</th><td>${s.managed ? "yes" : "no"}</td></tr></tbody></table>
+      <h2>Security insights <span class="muted">(mock, last scan ${esc(v.lastScanned)})</span></h2>
+      ${kpis([["Active deployments", s.deployments.length], ["Open findings", v.open], ["Critical", sev(v.critical, "critical")], ["High", sev(v.high, "high")], ["Medium", sev(v.medium, "medium")], ["Low", sev(v.low, "low")]])}
+      <h3>Runs on</h3><table><thead><tr><th>Cluster</th><th>Health</th><th>Sync</th></tr></thead><tbody>${s.deployments.map(d => `<tr><td><a href="#cluster=${d.cluster}">${esc(DATA.clusters[d.cluster].title)}</a></td><td>${esc(d.status)}</td><td>${esc(d.sync)}</td></tr>`).join("")}</tbody></table>
+      <h2>Service Readiness</h2>${r.inScope ? (r.currentStage ? "" : `<p class="muted">The service has no parent application or platform capability, so its current stage is unknown.</p>`) + `<div class="two">${stages}</div>` : `<p class="muted">No readiness criteria apply to service type ${esc(s.type)}.</p>`}`;
+  },
+  team(t) { const list = S.filter(s => s.team === t), x = roll(list); return `${note()}<h2>${esc(DATA.teams[t]?.title || t)}</h2><p class="muted">${esc(DATA.teams[t]?.description)}</p>${kpis([["Services", list.length], ["Critical", x.critical], ["High", x.high], ["Open findings", x.open]])}${serviceTable(list)}`; },
+  parent(key) {
+    const [kind, name] = key.split(":"), src = kind === "application" ? DATA.applications : DATA.capabilities, p = src[name]; if (!p) return `<p>Unknown ${esc(key)}</p>`;
+    const list = S.filter(s => s.parentKind === kind && s.parent === name), x = roll(list);
+    const docs = p.docs ? `<p>Documents: ${docLinks(p.docs)}</p>` : "";
+    return `${note()}<h2>${esc(p.title)} <span class="pill">${kind === "application" ? "Application" : "Platform capability"}</span> <span class="pill">${esc(stageLabel(p.availability))}</span></h2><p class="muted">${esc(p.description || "")}</p><p>Owning team: ${teamLink(p.team)}</p>${docs}
+      ${kpis([["Services", list.length], ["Critical", x.critical], ["High", x.high], ["Open findings", x.open]])}${serviceTable(list)}`;
+  },
+  cluster(c) { const list = S.filter(s => s.deployments.some(d => d.cluster === c)); return `${note()}<h2>${esc(DATA.clusters[c]?.title || c)}</h2>${kpis([["Deployed services", list.length], ["Degraded", list.filter(s => s.deployments.find(d => d.cluster === c).status === "Degraded").length]])}${serviceTable(list)}`; },
+};
+
+const afterRender = {
+  services() {
+    const f = ["q", "type", "life", "team", "rd"].map(id => document.getElementById(id));
+    const apply = () => { const [q, type, life, team, rd] = f.map(x => x.value.toLowerCase());
+      document.getElementById("list").innerHTML = serviceTable(S.filter(s => (!q || (s.name + " " + s.title + " " + s.description).toLowerCase().includes(q)) && (!type || s.type === type) && (!life || s.lifecycle === life) && (!team || s.team === team)
+        && (!rd || (rd === "ready" ? current(s)?.passed : rd === "not ready" ? current(s) && !current(s).passed : !s.readiness.inScope))));
+      document.querySelectorAll("#list table").forEach(sortable); };
+    f.forEach(x => x.oninput = apply); apply();
+  },
+};
+
+function route() {
+  const [view, arg] = decodeURIComponent(location.hash.slice(1) || "overview").split("=");
+  document.getElementById("app").innerHTML = (views[view] || views.overview)(arg);
+  afterRender[view]?.();
+  document.querySelectorAll("#app table").forEach(sortable);
+  document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + view));
+  window.scrollTo(0, 0);
+}
+window.onhashchange = route; route();
+</script>
+</body>
+</html>

@@ -1,71 +1,66 @@
-# OpenChoreo Nexus Catalog demo
+# Nexus Catalog on OpenChoreo (demo)
 
-Sanitized, synthetic catalog data for evaluating whether OpenChoreo's
-Backstage-based portal can represent the Nexus Catalog model.
+The Nexus Catalog model imported into the OpenChoreo portal through catalog-import: platform capabilities, applications, services, teams, Service Readiness by stage, per-service vulnerability summaries and a global vulnerability summary.
 
-This repository contains no IFS source code, credentials, internal URLs, or
-real vulnerability findings.
+- Import URL: `https://github.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/blob/main/catalog-info.yaml`
+- Insights dashboard: https://sachin-jayasundara.github.io/openchoreo-nexus-catalog-demo/
 
-## Load into OpenChoreo
+## What is real and what is mock
 
-For the OpenChoreo sandbox, create native OpenChoreo resources from its web
-terminal:
+| Data | Source |
+|---|---|
+| Counts, service types, lifecycles, availability, ownership and parent relations of platform capabilities, applications, services and teams | Nexus Catalog snapshot |
+| Names and descriptions | Pseudonymized, for example application `amber-falcon`, platform capability `aurora`, service `amber-falcon-api`, team `bravo` |
+| Service Readiness by stage and missing criteria | Computed from the catalog's `service-readiness/criteria.yaml`, attestations and exclusions with the same rules as `readiness-validator` |
+| Vulnerabilities, deployments, clusters | Mock, generated deterministically per service |
 
-```bash
-kubectl apply -f https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/openchoreo-resources.yaml
+Not published: real names and descriptions, emails, Entra group IDs, Jira projects, contributors, repository and documentation links, readiness evidence and documentation bodies.
+
+## How the Nexus model maps to the portal
+
+OpenChoreo's portal labels Backstage Domains as **Namespaces** and Systems as **Projects**.
+
+| Nexus Catalog | Portal entity | Where to find it |
+|---|---|---|
+| Platform capability | Project (System) in namespace `nexus-platform-capabilities` | Catalog > Project |
+| Application | Project (System) in namespace `nexus-applications` | Catalog > Project |
+| Service | Component in its parent's namespace, or `nexus-standalone-services` | Catalog > Component. The description starts with the vulnerability counts and current-stage readiness |
+| Team | Group in namespace `nexus-teams` | Catalog > Group. The ownership card lists what the team owns |
+| Service Readiness and security insights | Resource `<service>-insights` (type `service-insights`) in `nexus-insights` | Linked from each service's relations graph. Lists readiness per stage, missing criteria and vulnerability counts |
+| Global vulnerability summary | Resource `nexus-vulnerability-summary` | Catalog > Resource |
+| Service Readiness summary | Resource `nexus-service-readiness-summary` | Catalog > Resource |
+| Runs on | Resources `nexus-{dev,tst,prd}-cluster`, linked by `dependsOn` | Service relations graph |
+
+Tags support filtering and search: `readiness:ready`, `readiness:not-ready`, `readiness:not-applicable`, `vulns:critical`, `vulns:high`, `lifecycle:<value>`.
+
+## Load it into the OpenChoreo sandbox
+
+The sandbox's catalog rules reject `Group` (and `Domain`) entities from catalog-import. The script adds a Backstage config layer that allows them. It only changes the sandbox's own portal deployment and restarts it.
+
+1. In the sandbox web terminal:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/sandbox/allow-nexus-catalog-kinds.sh | sh
+   ```
+
+2. Reload the console and sign in again if asked. Open **Catalog > Register existing component** (or `/catalog-import`), paste the import URL above, select **Analyze** and then **Import**.
+3. Processing takes about a minute. Start at **Catalog > Resource > Nexus · Global vulnerability summary**, or **Catalog > Project** for the capabilities and applications.
+
+To undo the change: `curl -fsSL https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/sandbox/revert-nexus-catalog-kinds.sh | sh`. To remove the data, unregister the `nexus-catalog-demo` location from its entity page.
+
+If the script cannot change the portal, import `catalog-info-without-domains-groups.yaml` instead. It leaves out teams and namespaces, so owner links do not resolve.
+
+## Limits of the stock portal
+
+- Imported Components still show OpenChoreo's Build, Deploy and runtime cards, which report that no OpenChoreo metadata exists, because the services are not deployed by OpenChoreo.
+- Readiness and vulnerability cards on the service page, and a global dashboard page inside the portal, need a custom Backstage frontend plugin in a self-hosted portal image. Until then the `-insights` Resources, the summary Resources and the dashboard carry that information.
+- TechDocs is enabled but builds with Docker, which the hosted portal cannot run, so the demo only lists which documents each platform capability has.
+
+## Regenerate
+
+```sh
+python tools/generate_from_nexus_catalog.py --catalog ../nexus-catalog --out . --pseudonymize \
+  --dashboard-url https://sachin-jayasundara.github.io/openchoreo-nexus-catalog-demo/
 ```
 
-The OpenChoreo catalog-sync provider then projects these resources into the
-Backstage catalog:
-
-- Kubernetes/OpenChoreo Namespace → Backstage `Domain`
-- OpenChoreo Project → Backstage `System`
-- OpenChoreo Component → Backstage `Component`
-- OpenChoreo API definition → Backstage `API`
-
-This is the supported path for entities that should participate in OpenChoreo
-project, component, build, deployment, and runtime views. The catalog import
-wizard only registers external Backstage entities. Those entities do not have
-the OpenChoreo annotations required by the OpenChoreo-specific tabs.
-
-Verify the native resources:
-
-```bash
-kubectl get projects,components -n default \
-  -l demo.ifs.com/dataset=nexus-catalog-mock
-```
-
-Allow approximately 30 seconds for catalog synchronization, then refresh the
-Catalog page.
-
-Cleanup:
-
-```bash
-kubectl delete projects,components -n default \
-  -l demo.ifs.com/dataset=nexus-catalog-mock
-```
-
-`catalog-info.yaml` remains in this repository solely to demonstrate external
-Backstage entities. The hosted sandbox's URL-import policy may reject entity
-kinds that are not globally enabled. Production team synchronization requires
-an organization provider and explicit `Group`/`User` catalog rules.
-
-## Vulnerability demonstration
-
-Each mock service has synthetic vulnerability counts in
-`nexus.ifs.com/*` catalog annotations. `vulnerability-summary.json` contains
-the same records plus global totals.
-
-The standard OpenChoreo catalog can import and retain this metadata, but it
-does not automatically render the Nexus service-readiness and vulnerability
-screens. Matching those screens requires a custom Backstage frontend/backend
-plugin that:
-
-1. reads the per-service annotations or a vulnerability API;
-2. renders a service-level vulnerability card;
-3. aggregates all visible services into a global dashboard;
-4. applies catalog permissions when calculating totals;
-5. links findings back to the authoritative scanner.
-
-The included counts are synthetic and must not be treated as security
-evidence.
+This writes `catalog/*.yaml`, `docs/data.json` and `docs/index.html`. Without `--pseudonymize` the output keeps the real names and links to the Bitbucket repositories and documents; keep that output private.
