@@ -1,0 +1,187 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Project
+metadata:
+  name: nexus-cicd-platform
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Nexus CI/CD Platform
+    openchoreo.dev/description: >-
+      Mock projection of the Nexus CI/CD platform capability for evaluating
+      OpenChoreo catalog navigation. Git, Tekton, and Argo CD remain authoritative.
+  labels:
+    openchoreo.dev/name: nexus-cicd-platform
+    demo.ifs.com/dataset: nexus-catalog-mock
+spec:
+  deploymentPipelineRef:
+    name: default
+  type:
+    kind: ClusterProjectType
+    name: default
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: nexus-catalog
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Nexus Catalog
+    openchoreo.dev/description: >-
+      Authoritative model for Nexus applications, platform capabilities,
+      services, ownership, availability, and readiness evidence.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: platform-service
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/service
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: catalog-reconciler
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Catalog Reconciler
+    openchoreo.dev/description: >-
+      Projects catalog definitions into reviewable GitOps changes, including
+      Argo CD ApplicationSets, AppProjects, namespaces, and ownership rules.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: automation
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: readiness-validator
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Service Readiness Validator
+    openchoreo.dev/description: >-
+      Evaluates catalog readiness attestations and exclusions and gates
+      promotion when mandatory service-readiness criteria are unmet.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: policy-control
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: golden-pipeline
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Golden Pipeline
+    openchoreo.dev/description: >-
+      Governed Tekton delivery path for review, build, verification,
+      provenance, promotion, and GitOps pull requests.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: delivery-capability
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: source-artifact-management
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Source Artifact Management
+    openchoreo.dev/description: >-
+      Packages Git checkouts as OCI source artifacts and restores verified
+      source packages during promotion.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: artifact-service
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: vulnerability-scan-engine
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Container Vulnerability Scan Engine
+    openchoreo.dev/description: >-
+      Scanner-neutral container security engine using Trivy, CISA KEV
+      enrichment, ignore rules, and promotion policy enforcement.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: security-control
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: pipeline-run-management
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: PipelineRun Management
+    openchoreo.dev/description: >-
+      Retention automation for terminal Tekton PipelineRuns while preserving
+      active runs and explicitly retained evidence.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: operations-automation
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: cronjob/scheduled-task
+  autoDeploy: false
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: test-orchestration
+  namespace: default
+  annotations:
+    openchoreo.dev/display-name: Test Orchestration
+    openchoreo.dev/description: >-
+      Identifies target environments, analyses supported test suites, and
+      orchestrates Nexus CI validation across AKS environments.
+  labels:
+    demo.ifs.com/dataset: nexus-catalog-mock
+    nexus.ifs.com/service-type: test-automation
+spec:
+  owner:
+    projectName: nexus-cicd-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/worker
+  autoDeploy: false
