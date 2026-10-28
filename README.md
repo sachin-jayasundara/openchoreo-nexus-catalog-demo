@@ -8,11 +8,14 @@ real vulnerability findings.
 
 ## Import into OpenChoreo
 
-Use this raw URL in **Catalog → Register an existing catalog entity**:
+Use this GitHub file URL in **Catalog → Register an existing catalog entity**:
 
 ```text
-https://raw.githubusercontent.com/sac3478/openchoreo-nexus-catalog-demo/main/catalog-info.yaml
+https://github.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/blob/main/catalog-info.yaml
 ```
+
+The OpenChoreo hosted sandbox blocks `raw.githubusercontent.com`, so use the
+normal `github.com/.../blob/...` URL shown above.
 
 The imported model maps:
 
