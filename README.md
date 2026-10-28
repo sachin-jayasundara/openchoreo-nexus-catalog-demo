@@ -6,28 +6,49 @@ Backstage-based portal can represent the Nexus Catalog model.
 This repository contains no IFS source code, credentials, internal URLs, or
 real vulnerability findings.
 
-## Import into OpenChoreo
+## Load into OpenChoreo
 
-Use this GitHub file URL in **Catalog → Register an existing catalog entity**:
+For the OpenChoreo sandbox, create native OpenChoreo resources from its web
+terminal:
 
-```text
-https://github.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/blob/main/catalog-info.yaml
+```bash
+kubectl apply -f https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/openchoreo-resources.yaml
 ```
 
-The OpenChoreo hosted sandbox blocks `raw.githubusercontent.com`, so use the
-normal `github.com/.../blob/...` URL shown above.
+The OpenChoreo catalog-sync provider then projects these resources into the
+Backstage catalog:
 
-The imported model maps:
+- Kubernetes/OpenChoreo Namespace → Backstage `Domain`
+- OpenChoreo Project → Backstage `System`
+- OpenChoreo Component → Backstage `Component`
+- OpenChoreo API definition → Backstage `API`
 
-- Nexus platform capability → Backstage `Domain`
-- Nexus application → Backstage `System`
-- Nexus service → Backstage `Component`
-- API contract → Backstage `API`
+This is the supported path for entities that should participate in OpenChoreo
+project, component, build, deployment, and runtime views. The catalog import
+wizard only registers external Backstage entities. Those entities do not have
+the OpenChoreo annotations required by the OpenChoreo-specific tabs.
 
-Nexus team names remain as owner references. The hosted sandbox rejects
-`Group` entities from URL imports; a production deployment must synchronize
-teams through an organization provider or explicitly allow `Group` for the
-catalog location.
+Verify the native resources:
+
+```bash
+kubectl get projects,components -n default \
+  -l demo.ifs.com/dataset=nexus-catalog-mock
+```
+
+Allow approximately 30 seconds for catalog synchronization, then refresh the
+Catalog page.
+
+Cleanup:
+
+```bash
+kubectl delete projects,components -n default \
+  -l demo.ifs.com/dataset=nexus-catalog-mock
+```
+
+`catalog-info.yaml` remains in this repository solely to demonstrate external
+Backstage entities. The hosted sandbox's URL-import policy may reject entity
+kinds that are not globally enabled. Production team synchronization requires
+an organization provider and explicit `Group`/`User` catalog rules.
 
 ## Vulnerability demonstration
 
