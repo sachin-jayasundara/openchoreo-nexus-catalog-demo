@@ -22,8 +22,12 @@ The imported model maps:
 - Nexus platform capability → Backstage `Domain`
 - Nexus application → Backstage `System`
 - Nexus service → Backstage `Component`
-- Nexus team → Backstage `Group`
 - API contract → Backstage `API`
+
+Nexus team names remain as owner references. The hosted sandbox rejects
+`Group` entities from URL imports; a production deployment must synchronize
+teams through an organization provider or explicitly allow `Group` for the
+catalog location.
 
 ## Vulnerability demonstration
 
