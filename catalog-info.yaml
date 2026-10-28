@@ -1,43 +1,4 @@
 apiVersion: backstage.io/v1alpha1
-kind: Group
-metadata:
-  name: nexus-platform-team
-  title: Nexus Platform Team
-  description: Mock owning team for the Nexus CI/CD platform capability.
-  tags: [nexus, mock]
-spec:
-  type: team
-  profile:
-    displayName: Nexus Platform Team
-  children: []
----
-apiVersion: backstage.io/v1alpha1
-kind: Group
-metadata:
-  name: developer-experience-team
-  title: Developer Experience Team
-  description: Mock owning team for catalog and developer experience services.
-  tags: [nexus, mock]
-spec:
-  type: team
-  profile:
-    displayName: Developer Experience Team
-  children: []
----
-apiVersion: backstage.io/v1alpha1
-kind: Group
-metadata:
-  name: platform-security-team
-  title: Platform Security Team
-  description: Mock owning team for platform security controls and evidence.
-  tags: [nexus, mock]
-spec:
-  type: team
-  profile:
-    displayName: Platform Security Team
-  children: []
----
-apiVersion: backstage.io/v1alpha1
 kind: Domain
 metadata:
   name: nexus-cicd-platform
