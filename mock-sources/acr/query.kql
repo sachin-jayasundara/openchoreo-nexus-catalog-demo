@@ -1,0 +1,26 @@
+// Microsoft Defender for Containers: vulnerability findings for images in Azure Container Registry,
+// as Azure Resource Graph sub-assessments of the MDVM assessment c0b7cfc6-3172-465a-b378-53c7ff2cc0d5.
+// The mock defender-findings.json has the shape of: az graph query -q "<this query>" --first 1000 -o json
+securityresources
+| where type =~ "microsoft.security/assessments/subassessments"
+| where properties.additionalData.assessedResourceType == "AzureContainerRegistryVulnerability"
+| extend assessmentKey = extract(@"(?i)providers/Microsoft.Security/assessments/([^/]*)", 1, id)
+| where assessmentKey == "c0b7cfc6-3172-465a-b378-53c7ff2cc0d5"
+| extend a = properties.additionalData
+| project
+    registry = tostring(a.artifactDetails.registryHost),
+    repository = tostring(a.artifactDetails.repositoryName),
+    digest = tostring(a.artifactDetails.digest),
+    tags = a.artifactDetails.tags,
+    cveId = tostring(a.vulnerabilityDetails.cveId),
+    severity = tostring(a.vulnerabilityDetails.severity),
+    cvss = todouble(a.vulnerabilityDetails.cvss["3.0"].base),
+    publishedDate = tostring(a.vulnerabilityDetails.publishedDate),
+    packageName = tostring(a.softwareDetails.packageName),
+    installedVersion = tostring(a.softwareDetails.version),
+    fixedVersion = tostring(a.softwareDetails.fixedVersion),
+    fixStatus = tostring(a.softwareDetails.fixStatus),
+    category = tostring(a.softwareDetails.category),
+    osDetails = strcat(tostring(a.softwareDetails.osDetails.osPlatform), " ", tostring(a.softwareDetails.osDetails.osVersion)),
+    statusCode = tostring(properties.status.code),
+    timeGenerated = tostring(properties.timeGenerated)

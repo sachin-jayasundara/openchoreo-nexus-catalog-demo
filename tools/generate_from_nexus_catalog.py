@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate an OpenChoreo (Backstage) catalog and an insights dashboard from a Nexus Catalog checkout.
 
-Readiness is evaluated with the same rules as nexus-ci/src/readiness-validator. Vulnerability,
-deployment and cluster data are mock values derived deterministically from each service name.
+Readiness is evaluated with the same rules as nexus-ci/src/readiness-validator. Deployment status,
+versions and vulnerabilities come from tools/insights_collector.py joining mock exports of GitOps,
+Argo CD and Azure Resource Graph (Defender for Containers) in mock-sources/.
 
 Never copied: team emails, Entra group IDs, Jira projects, contributors, readiness evidence
 links, exclusion references and documentation bodies.
@@ -14,12 +15,14 @@ import glob
 import hashlib
 import json
 import os
-import random
 import re
 import subprocess
-from collections import Counter, defaultdict
+from collections import Counter
 
 import yaml
+
+import insights_collector as ic
+import mock_sources
 
 STAGES = ["preview", "early-access", "general-availability"]
 STAGE_LABELS = {"preview": "Preview", "early-access": "Early access", "general-availability": "General availability"}
@@ -32,16 +35,23 @@ NS_TEAMS = "nexus-teams"
 NS_INSIGHTS = "nexus-insights"
 NS_RUNTIME = "nexus-runtime"
 
+# Mock clusters. "lag" is how many releases a cluster may trail the previous one in promotion order.
 CLUSTERS = {
-    "nexus-dev-cluster": ("Nexus DEV cluster (mock)", "dev"),
-    "nexus-tst-cluster": ("Nexus TST cluster (mock)", "tst"),
-    "nexus-prd-cluster": ("Nexus PRD cluster (mock)", "prd"),
+    "nexus-dev-euno-01": {"title": "DEV euno-01", "stage": "dev", "ring": "one", "region": "North Europe", "lag": [0]},
+    "nexus-tst-euno-01": {"title": "TST euno-01", "stage": "tst", "ring": "one", "region": "North Europe", "lag": [0, 0, 1]},
+    "nexus-prd-euno-01": {"title": "PRD euno-01 (ring one)", "stage": "prd", "ring": "one", "region": "North Europe", "lag": [0, 1, 1, 2]},
+    "nexus-prd-usea-01": {"title": "PRD usea-01 (ring two)", "stage": "prd", "ring": "two", "region": "East US", "lag": [0, 0, 1]},
 }
 CLUSTERS_BY_LIFECYCLE = {
-    "test": ["nexus-dev-cluster"],
-    "staging": ["nexus-dev-cluster", "nexus-tst-cluster"],
-    "production": ["nexus-dev-cluster", "nexus-tst-cluster", "nexus-prd-cluster"],
+    "test": ["nexus-dev-euno-01"],
+    "staging": ["nexus-dev-euno-01", "nexus-tst-euno-01"],
+    "production": list(CLUSTERS),
 }
+LIVE_SCENARIOS = ["in-sync", "sync-failed", "in-sync", "in-sync", "degraded", "in-sync", "not-deployed", "in-sync"]
+LIVE_NAMESPACE = "nexus-demo-live"
+LIVE_HOST = f"nexus-live-collector.{LIVE_NAMESPACE}.svc.cluster.local"
+PAUSE_IMAGE = "registry.k8s.io/pause:3.10"
+BROKEN_IMAGE = "registry.k8s.io/pause:nexus-demo-missing-tag"
 
 ENTITY_NAME = re.compile(r"^([a-zA-Z0-9]+[-_.])*[a-zA-Z0-9]+$")
 TAG = re.compile(r"^[a-z0-9:+#]+(-[a-z0-9:+#]+)*$")
@@ -139,44 +149,27 @@ def evaluate_service(svc, criteria, exclusions, now):
     return stages
 
 
-def seeded(name, salt):
-    return random.Random(int(hashlib.sha256(f"{salt}:{name}".encode()).hexdigest()[:16], 16))
-
-
-def mock_vulnerabilities(name, lifecycle, today):
-    rnd = seeded(name, "vulns")
-    critical = rnd.choices([0, 1, 2, 3, 4], weights=[70, 15, 9, 4, 2])[0]
-    high = rnd.choices(range(0, 12), weights=[22, 14, 12, 10, 9, 8, 7, 6, 5, 3, 2, 2])[0]
-    medium = rnd.randint(0, 6) + rnd.randint(0, 22)
-    low = rnd.randint(0, 10) + rnd.randint(0, 28)
-    if lifecycle == "production" and critical and rnd.random() < 0.4:
-        critical -= 1
-    return {
-        "critical": critical,
-        "high": high,
-        "medium": medium,
-        "low": low,
-        "open": critical + high + medium + low,
-        "lastScanned": (today - dt.timedelta(days=rnd.randint(0, 13))).isoformat(),
-        "scanner": "Trivy image scan (mock data)",
-    }
-
-
-def mock_deployments(name, lifecycle):
-    rnd = seeded(name, "deployments")
-    deployments = []
-    for cluster in CLUSTERS_BY_LIFECYCLE.get(lifecycle, ["nexus-dev-cluster"]):
-        status = rnd.choices(["Healthy", "Progressing", "Degraded"], weights=[90, 6, 4])[0]
-        deployments.append({"cluster": cluster, "status": status, "sync": "Synced" if status == "Healthy" else "OutOfSync"})
-    return deployments
-
-
 def titleize(name):
     return " ".join(part.upper() if len(part) <= 3 and part not in ("and", "for", "the") else part.capitalize() for part in name.split("-"))
 
 
 def vuln_text(v):
     return f"Vulns C{v['critical']}/H{v['high']}/M{v['medium']}/L{v['low']}"
+
+
+def sev_cell(v):
+    return f"{v['critical']}/{v['high']}/{v['medium']}/{v['low']}"
+
+
+def md_table(header, rows):
+    return ic.md_table(header, rows)
+
+
+class LiteralDumper(yaml.SafeDumper):
+    pass
+
+
+LiteralDumper.add_representer(str, lambda d, s: d.represent_scalar("tag:yaml.org,2002:str", s, style="|" if "\n" in s else None))
 
 
 def risk_score(v):
@@ -328,10 +321,35 @@ def build(args):
             "availability": availability,
             "repository": repo,
             "readiness": {"inScope": bool(stages), "currentStage": availability if current else None, "stages": stages},
-            "vulnerabilities": mock_vulnerabilities(name, lifecycle, today),
-            "deployments": mock_deployments(name, lifecycle),
         })
     by_name = {r["name"]: r for r in rows}
+
+    # ---- deployments, versions and vulnerabilities from the source exports ---------------------
+    scope = {r["name"]: CLUSTERS_BY_LIFECYCLE.get(r["lifecycle"], CLUSTERS_BY_LIFECYCLE["test"]) for r in rows}
+    lifecycles_by_parent = {}
+    for r in rows:
+        if r["parent"]:
+            lifecycles_by_parent.setdefault(r["parent"], []).append(r["lifecycle"])
+    live_parent = args.live_parent or max(
+        (p for p, lc in sorted(lifecycles_by_parent.items()) if 4 <= len(lc) <= args.live_max + 2),
+        key=lambda p: (len(set(lifecycles_by_parent[p])), lifecycles_by_parent[p].count("production")))
+    live_rows = sorted((r for r in rows if r["parent"] == live_parent), key=lambda r: (r["lifecycle"] != "production", r["name"]))[:args.live_max]
+    pairs = [(r["name"], c) for r in live_rows for c in scope[r["name"]]]
+    forced = {pair: LIVE_SCENARIOS[i % len(LIVE_SCENARIOS)] for i, pair in enumerate(pairs)}
+    sources = args.sources or os.path.join(args.out, "mock-sources")
+    if args.write_mock_sources:
+        print(json.dumps({"mockSources": mock_sources.write(sources, scope, CLUSTERS, now, forced)}))
+    desired = ic.read_gitops_dir(os.path.join(sources, "gitops"))
+    live = {}
+    for path in sorted(glob.glob(os.path.join(sources, "argocd", "*.json"))):
+        with open(path, encoding="utf-8") as f:
+            live.update(ic.from_argocd(json.load(f)))
+    with open(os.path.join(sources, "acr", "defender-findings.json"), encoding="utf-8") as f:
+        findings_index = ic.index_findings(json.load(f))
+    joined = ic.join(scope, CLUSTERS, desired, live, findings_index)
+    for r in rows:
+        j = joined[r["name"]]
+        r.update(environments=j["environments"], deployState=j["worstState"], vulnerabilities=j["vulnerabilities"], findings=j["findings"])
 
     def readiness_text(r):
         rd = r["readiness"]
@@ -415,40 +433,55 @@ def build(args):
         entities.append(parent_system("application", name, app, NS_APPLICATIONS, NS_APPLICATIONS))
 
     # ---- clusters ---------------------------------------------------------------
-    for name, (title, env) in CLUSTERS.items():
-        running = [r for r in rows if any(d["cluster"] == name for d in r["deployments"])]
+    def on_cluster(name):
+        return [(r, e) for r in rows for e in r["environments"] if e["cluster"] == name]
+
+    for name, c in CLUSTERS.items():
+        apps = on_cluster(name)
+        states = Counter(e["state"] for _, e in apps)
+        problems = sorted(((r, e) for r, e in apps if e["state"] != "in-sync"), key=lambda x: (ic.STATES.index(x[1]["state"]), x[0]["name"]))
+        lines = [f"**Mock {c['stage'].upper()} cluster** in {c['region']}, ring `{c['ring']}`. GitOps path `{c['stage']}/rings/{c['ring']}/chart-versions/`.", ""]
+        lines += md_table(["Services", "In sync", "Version drift", "Degraded", "Progressing", "Not deployed"],
+                          [[len(apps), states["in-sync"], states["drift"], states["degraded"], states["progressing"], states["not-deployed"]]])
+        if problems:
+            lines += ["", "**Needs attention**"] + [
+                f"- {r['title']}: {ic.STATE_LABELS[e['state']]}" + (f", running {ic.short_version(e['liveVersion'])}, GitOps {ic.short_version(e['desiredVersion'])}" if e["state"] == "drift" else "")
+                + (f" ({e['message']})" if e["message"] else "") for r, e in problems[:12]]
+            if len(problems) > 12:
+                lines.append(f"- and {len(problems) - 12} more on the dashboard")
         entities.append(entity("Resource", name, NS_RUNTIME,
                                {"type": "kubernetes-cluster", "owner": team_ref(infra_owner), "system": f"{NS_CAPABILITIES}/{runtime_system}"},
-                               title=title,
-                               description=f"Mock {env.upper()} cluster. {len(running)} services deployed.",
-                               tags=[f"environment:{env}", "mock-data"],
+                               title=f"Nexus {c['title']} (mock)",
+                               description="\n".join(lines),
+                               tags=[f"environment:{c['stage']}", f"ring:{c['ring']}", "mock-data"],
                                links=[{"url": f"{dashboard}#cluster={name}", "title": "Deployments on this cluster"}]))
 
     # ---- services and their insights ---------------------------------------------
     for r in rows:
-        v = r["vulnerabilities"]
+        v, envs = r["vulnerabilities"], r["environments"]
         annotations = {
             "nexus.demo/service-type": r["type"],
             "nexus.demo/availability": r["availability"] or "none",
             "nexus.demo/readiness": readiness_text(r),
-            "nexus.demo/vulnerabilities": f"critical={v['critical']},high={v['high']},medium={v['medium']},low={v['low']}",
-            "nexus.demo/data-note": "vulnerabilities and deployments are mock data",
+            "nexus.demo/vulnerabilities": f"critical={v['critical']},high={v['high']},medium={v['medium']},low={v['low']},fixable={v['fixable']}",
+            "nexus.demo/deployments": ",".join(f"{e['cluster']}={ic.short_version(e['liveVersion']) or 'none'}:{e['state']}" for e in envs),
+            "nexus.demo/data-note": "deployments, versions and vulnerabilities come from mock GitOps, Argo CD and ACR exports",
         }
         if r["repository"]:
             annotations["backstage.io/source-location"] = f"url:{r['repository'].rstrip('/')}/src/main/"
         if r["parent"]:
             annotations["openchoreo.io/project"] = r["parent"]
         spec = {"type": r["type"], "lifecycle": r["lifecycle"], "owner": team_ref(r["team"]),
-                "dependsOn": [f"resource:{NS_RUNTIME}/{d['cluster']}" for d in r["deployments"]]}
+                "dependsOn": [f"resource:{NS_RUNTIME}/{e['cluster']}" for e in envs if e["state"] != "not-deployed"]}
         if r["parent"]:
             spec["system"] = r["parent"]
         entities.append(entity(
             "Component", r["name"], r["namespace"], spec,
             title=r["title"],
-            description=f"{vuln_text(v)} · {readiness_text(r)} · {r['description']}",
+            description=f"{vuln_text(v)} · {readiness_text(r)} · {ic.deploy_text(envs)} · {r['description']}",
             annotations=annotations,
-            tags=[readiness_tag(r), vuln_tag(v), f"lifecycle:{r['lifecycle']}"],
-            links=[{"url": f"{dashboard}#service={r['name']}", "title": "Readiness and vulnerability report"}],
+            tags=[readiness_tag(r), vuln_tag(v), f"deploy:{r['deployState']}", f"lifecycle:{r['lifecycle']}"],
+            links=[{"url": f"{dashboard}#service={r['name']}", "title": "Deployments, readiness and vulnerabilities"}],
         ))
 
         lines = []
@@ -469,21 +502,35 @@ def build(args):
                     shown = ", ".join(missing[:6]) + (f", and {len(missing) - 6} more" if len(missing) > 6 else "")
                     line += f". Missing: {shown}"
                 lines.append(line)
-        lines.append("")
-        lines.append(f"**Security insights** (mock scan {v['lastScanned']})")
-        lines.append(f"- Critical {v['critical']} · High {v['high']} · Medium {v['medium']} · Low {v['low']} · Open findings {v['open']}")
-        lines.append("- Runs on: " + ", ".join(f"{CLUSTERS[d['cluster']][1].upper()} ({d['status']})" for d in r["deployments"]))
+        lines += ["", "**Deployments**: GitOps desired version against what Argo CD reports running (mock exports)", ""]
+        if envs:
+            lines += md_table(["Cluster", "GitOps desired", "Running", "Sync", "Health", "Vulns C/H/M/L"],
+                              [[CLUSTERS[e["cluster"]]["title"], ic.short_version(e["desiredVersion"]) or "not in GitOps",
+                                ic.short_version(e["liveVersion"]) or "not deployed", e["sync"] or "—", e["health"], sev_cell(e["vulnerabilities"])] for e in envs])
+            notes = [f"- {CLUSTERS[e['cluster']]['title']}: {ic.STATE_LABELS[e['state']]}" + (f". {e['message']}" if e["message"] else "")
+                     for e in envs if e["state"] != "in-sync"]
+            lines += ([""] + notes) if notes else []
+        else:
+            lines.append("No GitOps version and no Application on any cluster.")
+        lines += ["", f"**Vulnerabilities in running images**: Microsoft Defender for Containers findings from ACR (mock, last scan {v['lastScanned'] or 'n/a'})",
+                  f"- Critical {v['critical']} · High {v['high']} · Medium {v['medium']} · Low {v['low']} · Open {v['open']} · Fix available for {v['fixable']}",
+                  f"- In production images: {vuln_text(v['production'])}"]
+        top_findings = [f for f in r["findings"] if f["severity"] in ("critical", "high")][:8]
+        if top_findings:
+            lines += [""] + md_table(["CVE", "Severity", "Package", "Installed", "Fixed in", "Running on"],
+                                     [[f["cve"], f["severity"].capitalize(), f["package"], f["installed"], f["fixed"] or "no fix yet",
+                                       ", ".join(CLUSTERS[c]["title"] for c in f["clusters"])] for f in top_findings])
         res_spec = {"type": "service-insights", "owner": team_ref(r["team"]),
                     "dependencyOf": [f"component:{r['namespace']}/{r['name']}"]}
         if r["parent"]:
             res_spec["system"] = r["parent"]
         entities.append(entity(
             "Resource", f"{r['name']}-insights", r["namespace"], res_spec,
-            title=f"{r['title']} · readiness and security",
+            title=f"{r['title']} · deployments, readiness and security",
             description="\n".join(lines),
             annotations={"openchoreo.io/project": r["parent"]} if r["parent"] else None,
-            tags=[readiness_tag(r), vuln_tag(v), "mock-vulnerability-data"],
-            links=[{"url": f"{dashboard}#service={r['name']}", "title": "Full readiness and vulnerability report"}]
+            tags=[readiness_tag(r), vuln_tag(v), f"deploy:{r['deployState']}", "mock-source-data"],
+            links=[{"url": f"{dashboard}#service={r['name']}", "title": "Full deployment, readiness and vulnerability report"}]
                   + ([{"url": r["repository"], "title": "Repository"}] if r["repository"] else []),
         ))
 
@@ -491,13 +538,31 @@ def build(args):
     total = rollup(rows)
     top = sorted(rows, key=lambda x: risk_score(x["vulnerabilities"]), reverse=True)[:10]
     by_parent_kind = {k: rollup([r for r in rows if r["parentKind"] == k]) for k in ("platform-capability", "application", None)}
+    cves = {}
+    for r in rows:
+        for f in r["findings"]:
+            c = cves.setdefault(f["cve"], {"severity": f["severity"], "cvss": f["cvss"], "package": f["package"], "services": set(), "production": set(), "fixable": False})
+            c["services"].add(r["name"])
+            c["fixable"] |= bool(f["fixed"])
+            if any(CLUSTERS[x]["stage"] == "prd" for x in f["clusters"]):
+                c["production"].add(r["name"])
+    top_cves = sorted(cves.items(), key=lambda kv: (ic.SEVERITIES.index(kv[1]["severity"]), -len(kv[1]["services"]), kv[0]))[:12]
+    fixable = sum(r["vulnerabilities"]["fixable"] for r in rows)
     vuln_lines = [
-        f"**Global vulnerability summary** across {total['services']} services (mock scan data)",
+        f"**Global vulnerability summary** across {total['services']} services: Microsoft Defender for Containers findings for the images "
+        f"running on each cluster, matched through Argo CD's image list (mock ACR export)",
         f"- Critical {total['critical']} · High {total['high']} · Medium {total['medium']} · Low {total['low']} · Open findings {total['open']}",
+        f"- Fix available for {fixable} of {total['open']} findings · {len(cves)} distinct CVEs",
         f"- Services with critical findings: {total['servicesWithCritical']}",
+        f"- Running in production: {vuln_text(rollup([{'vulnerabilities': r['vulnerabilities']['production']} for r in rows]))}",
         f"- Platform capability services: {vuln_text(by_parent_kind['platform-capability'])}",
         f"- Application services: {vuln_text(by_parent_kind['application'])}",
         f"- Services without a parent: {vuln_text(by_parent_kind[None])}",
+        "",
+        "**Most widespread critical and high CVEs**",
+        "",
+    ] + md_table(["CVE", "Severity", "Package", "Services", "In production", "Fix available"],
+                 [[k, c["severity"].capitalize(), c["package"], len(c["services"]), len(c["production"]), "yes" if c["fixable"] else "no"] for k, c in top_cves]) + [
         "",
         "**Highest risk services**",
     ] + [f"- {x['title']}: {vuln_text(x['vulnerabilities'])}" for x in top]
@@ -505,8 +570,32 @@ def build(args):
                            {"type": "security-summary", "owner": owner_catalog},
                            title="Nexus · Global vulnerability summary",
                            description="\n".join(vuln_lines),
-                           tags=["global-summary", "mock-vulnerability-data"],
+                           tags=["global-summary", "mock-source-data"],
                            links=[{"url": f"{dashboard}#security", "title": "Global vulnerability dashboard"}]))
+
+    deploy_rows, drift, degraded = [], [], []
+    for name, c in CLUSTERS.items():
+        states = Counter(e["state"] for _, e in on_cluster(name))
+        deploy_rows.append([c["title"], sum(states.values()), states["in-sync"], states["drift"], states["degraded"], states["progressing"], states["not-deployed"]])
+        drift += [(r, e) for r, e in on_cluster(name) if e["state"] == "drift"]
+        degraded += [(r, e) for r, e in on_cluster(name) if e["state"] == "degraded"]
+    deploy_lines = [
+        f"**Deployment status** of {len(rows)} services on {len(CLUSTERS)} clusters. The desired version comes from GitOps "
+        "(`<stage>/rings/<ring>/chart-versions/<service>.yaml`); running version, sync and health come from Argo CD (mock exports).",
+        "",
+    ] + md_table(["Cluster", "Services", "In sync", "Version drift", "Degraded", "Progressing", "Not deployed"], deploy_rows) + [
+        "", f"**Version drift**: {len(drift)} deployments run a different version than GitOps", "",
+    ] + md_table(["Service", "Cluster", "Running", "GitOps desired", "Reason"],
+                 [[r["title"], CLUSTERS[e["cluster"]]["title"], ic.short_version(e["liveVersion"]), ic.short_version(e["desiredVersion"]), e["message"] or "—"]
+                  for r, e in drift[:15]]) + [
+        "", f"**Degraded**: {len(degraded)} deployments", "",
+    ] + [f"- {r['title']} on {CLUSTERS[e['cluster']]['title']}: {e['message']}" for r, e in degraded[:15]]
+    entities.append(entity("Resource", "nexus-deployment-summary", NS_INSIGHTS,
+                           {"type": "deployment-summary", "owner": owner_catalog},
+                           title="Nexus · Deployment status and version drift",
+                           description="\n".join(deploy_lines),
+                           tags=["global-summary", "mock-source-data"],
+                           links=[{"url": f"{dashboard}#deployments", "title": "Deployments dashboard"}]))
 
     in_scope = [r for r in rows if r["readiness"]["inScope"]]
     staged = [r for r in in_scope if r["readiness"]["currentStage"]]
@@ -554,10 +643,13 @@ def build(args):
     snapshot = {
         "generatedAt": now.isoformat(timespec="seconds"),
         "catalogCommit": commit,
-        "notes": "Readiness is computed from the Nexus Catalog snapshot. Vulnerabilities, deployments and clusters are mock data.",
+        "notes": "Readiness is computed from the Nexus Catalog snapshot. Deployments, versions and vulnerabilities come from mock GitOps, Argo CD and ACR (Defender) exports.",
         "counts": {"platformCapabilities": len(capabilities), "applications": len(applications), "services": len(rows), "teams": len(teams), "criteria": len(criteria)},
         "stageLabels": STAGE_LABELS,
-        "clusters": {k: {"title": t, "env": e} for k, (t, e) in CLUSTERS.items()},
+        "stateLabels": ic.STATE_LABELS,
+        "clusters": {k: {f: v[f] for f in ("title", "stage", "ring", "region")} for k, v in CLUSTERS.items()},
+        "cves": {k: {"severity": c["severity"], "cvss": c["cvss"]} for k, c in cves.items()},
+        "liveServices": [r["name"] for r in live_rows],
         "capabilities": {k: {"title": v.get("displayName") or titleize(k), "availability": v.get("availability"), "team": v.get("owningTeam"),
                              "docs": {dk: f"{bitbucket}/nexus-catalog/src/main/{dp}" if link_sources else "" for dk, dp in (v.get("docs") or {}).items()}} for k, v in capabilities.items()},
         "applications": {k: {"title": v.get("displayName") or titleize(k), "availability": v.get("availability"), "team": v.get("owningTeam"),
@@ -565,7 +657,81 @@ def build(args):
         "teams": {k: {"title": v.get("displayName") or titleize(k), "description": (v.get("description") or "").strip()} for k, v in teams.items()},
         "services": rows,
     }
-    return entities, snapshot
+    manifest = live_manifest(args, live_rows, scope, live, catalog_owner)
+    return entities, snapshot, manifest
+
+
+def live_manifest(args, live_rows, scope, live, catalog_owner):
+    """Kubernetes objects for the sandbox: one mock workload per Argo CD Application of the live services, and the collector."""
+    labels = {"nexus.demo/dataset": "nexus-catalog"}
+    docs = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns, "labels": labels}} for ns in [LIVE_NAMESPACE, *CLUSTERS]]
+    for r in live_rows:
+        for cluster in scope[r["name"]]:
+            app = live.get((r["name"], cluster))
+            if not app:
+                continue
+            pod_labels = {ic.LABEL_COMPONENT: r["name"], "app.kubernetes.io/name": r["name"]}
+            docs.append({
+                "apiVersion": "apps/v1", "kind": "Deployment",
+                "metadata": {"name": r["name"], "namespace": cluster, "labels": {**labels, **pod_labels},
+                             "annotations": {ic.ANNOTATION_CHART_VERSION: app["liveVersion"], ic.ANNOTATION_IMAGE: app["images"][0],
+                                             ic.ANNOTATION_DEPLOYED_AT: app["deployedAt"]}},
+                "spec": {"replicas": 1, "progressDeadlineSeconds": 60, "selector": {"matchLabels": {ic.LABEL_COMPONENT: r["name"]}},
+                         "template": {"metadata": {"labels": pod_labels}, "spec": {
+                             "automountServiceAccountToken": False,
+                             "securityContext": {"runAsNonRoot": True, "runAsUser": 65535, "seccompProfile": {"type": "RuntimeDefault"}},
+                             "containers": [{"name": "app", "image": BROKEN_IMAGE if app["health"] == "Degraded" else PAUSE_IMAGE,
+                                             "resources": {"requests": {"cpu": "1m", "memory": "4Mi"}, "limits": {"memory": "16Mi"}},
+                                             "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}}}]}}},
+            })
+    config = {
+        "gitopsBaseUrl": f"{args.source_base_url.rstrip('/')}/gitops",
+        "acrFindingsUrl": f"{args.source_base_url.rstrip('/')}/acr/defender-findings.json",
+        "datasetUrl": args.dataset_url,
+        "intervalSeconds": 30, "sourceRefreshSeconds": 300,
+        "teamNamespace": NS_TEAMS, "insightsNamespace": NS_INSIGHTS, "catalogOwner": catalog_owner,
+        "clusters": {k: {"title": f"{c['title']} (ns {k})", "stage": c["stage"], "ring": c["ring"], "namespace": k} for k, c in CLUSTERS.items()},
+        "services": [{"name": r["name"], "title": r["title"], "namespace": r["namespace"], "parent": r["parent"], "team": r["team"],
+                      "clusters": scope[r["name"]]} for r in live_rows],
+    }
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "insights_collector.py"), encoding="utf-8") as f:
+        code = f.read()
+    data = {"collector.py": code, "config.json": json.dumps(config, indent=1) + "\n"}
+    checksum = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+    app_labels = {"app.kubernetes.io/name": "nexus-live-collector"}
+    docs.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "nexus-live-collector", "namespace": LIVE_NAMESPACE, "labels": labels}, "data": data})
+    docs.append({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "nexus-live-collector", "namespace": LIVE_NAMESPACE, "labels": labels}})
+    for ns in CLUSTERS:
+        docs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "nexus-live-collector-read", "namespace": ns, "labels": labels},
+                     "rules": [{"apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get", "list"]},
+                               {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}]})
+        docs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "nexus-live-collector-read", "namespace": ns, "labels": labels},
+                     "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "nexus-live-collector-read"},
+                     "subjects": [{"kind": "ServiceAccount", "name": "nexus-live-collector", "namespace": LIVE_NAMESPACE}]})
+    docs.append({
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": "nexus-live-collector", "namespace": LIVE_NAMESPACE, "labels": {**labels, **app_labels}},
+        "spec": {"replicas": 1, "selector": {"matchLabels": app_labels}, "template": {
+            "metadata": {"labels": app_labels, "annotations": {"nexus.demo/config-checksum": checksum}},
+            "spec": {
+                "serviceAccountName": "nexus-live-collector",
+                "securityContext": {"runAsNonRoot": True, "runAsUser": 65534, "runAsGroup": 65534, "seccompProfile": {"type": "RuntimeDefault"}},
+                "containers": [{
+                    "name": "collector", "image": "python:3.12-alpine",
+                    "command": ["python", "/app/collector.py", "serve", "--config", "/app/config.json", "--port", "8080"],
+                    "env": [{"name": "PYTHONDONTWRITEBYTECODE", "value": "1"}, {"name": "PYTHONUNBUFFERED", "value": "1"}],
+                    "ports": [{"name": "http", "containerPort": 8080}],
+                    "readinessProbe": {"httpGet": {"path": "/healthz", "port": "http"}, "periodSeconds": 5},
+                    "resources": {"requests": {"cpu": "10m", "memory": "64Mi"}, "limits": {"memory": "256Mi"}},
+                    "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
+                    "volumeMounts": [{"name": "app", "mountPath": "/app", "readOnly": True}],
+                }],
+                "volumes": [{"name": "app", "configMap": {"name": "nexus-live-collector"}}],
+            }}},
+    })
+    docs.append({"apiVersion": "v1", "kind": "Service", "metadata": {"name": "nexus-live-collector", "namespace": LIVE_NAMESPACE, "labels": labels},
+                 "spec": {"selector": app_labels, "ports": [{"name": "http", "port": 80, "targetPort": "http"}]}})
+    return docs
 
 
 def main():
@@ -575,9 +741,21 @@ def main():
     parser.add_argument("--dashboard-url", required=True)
     parser.add_argument("--repo-base-url", default="https://bitbucket.org/ifs-pd")
     parser.add_argument("--pseudonymize", action="store_true", help="replace names and descriptions and drop repository and documentation links")
+    parser.add_argument("--sources", help="directory with gitops/, argocd/ and acr/ exports (default: <out>/mock-sources)")
+    parser.add_argument("--write-mock-sources", action="store_true", help="regenerate the mock exports in --sources first")
+    parser.add_argument("--live-parent", help="platform capability or application whose services run as live workloads in the sandbox")
+    parser.add_argument("--live-max", type=int, default=6)
+    parser.add_argument("--source-base-url", default="https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/mock-sources",
+                        help="where the sandbox collector reads the GitOps and ACR exports")
+    parser.add_argument("--dataset-url", default="https://raw.githubusercontent.com/sachin-jayasundara/openchoreo-nexus-catalog-demo/main/docs/data.json",
+                        help="insights dataset the sandbox collector serves to the portal plugin, with live state merged in")
     args = parser.parse_args()
 
-    entities, snapshot = build(args)
+    entities, snapshot, manifest = build(args)
+    os.makedirs(os.path.join(args.out, "sandbox", "live"), exist_ok=True)
+    with open(os.path.join(args.out, "sandbox", "live", "nexus-live-cluster-demo.yaml"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("# Generated by tools/generate_from_nexus_catalog.py. Applied by sandbox/setup-nexus-portal.sh.\n")
+        yaml.dump_all(manifest, f, Dumper=LiteralDumper, sort_keys=False, allow_unicode=True, explicit_start=True, width=4096)
     os.makedirs(os.path.join(args.out, "catalog"), exist_ok=True)
     os.makedirs(os.path.join(args.out, "docs"), exist_ok=True)
     variants = {

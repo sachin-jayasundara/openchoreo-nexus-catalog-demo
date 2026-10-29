@@ -49,7 +49,7 @@
 <header>
   <h1>Nexus Catalog · insights</h1>
   <nav id="nav">
-    <a href="#overview">Overview</a><a href="#security">Vulnerabilities</a><a href="#readiness">Service Readiness</a>
+    <a href="#overview">Overview</a><a href="#deployments">Deployments</a><a href="#security">Vulnerabilities</a><a href="#readiness">Service Readiness</a>
     <a href="#services">Services</a><a href="#parents">Capabilities &amp; applications</a><a href="#teams">Teams</a><a href="#docs">Documentation</a>
   </nav>
 </header>
@@ -97,6 +97,36 @@ function rollTable(groups, label) {
   return `<table><thead><tr><th>${label}</th><th class="num">Services</th>${sevHead}<th class="num">Open</th><th class="num">With critical</th></tr></thead><tbody>${
     groups.map(([link, list]) => { const t = roll(list); return `<tr><td>${link}</td><td class="num">${list.length}</td>${sevCells(t)}<td class="num">${t.open}</td><td class="num">${t.withCritical}</td></tr>`; }).join("")}</tbody></table>`;
 }
+const CL = DATA.clusters, STL = DATA.stateLabels, LIVE = new Set(DATA.liveServices);
+const STATE_CLASS = {"in-sync": "ok", "drift": "warn", "degraded": "bad", "progressing": "warn", "not-deployed": "", "not-in-gitops": "warn"};
+const shortV = v => { if (!v) return ""; const [b, s] = v.split("+"); return s ? `${b}+${s.slice(0, 7)}` : b; };
+const statePill = st => `<span class="pill ${STATE_CLASS[st]}">${esc(STL[st])}</span>`;
+const clusterLink = c => `<a href="#cluster=${c}">${esc(CL[c]?.title || c)}</a>`;
+const cveLink = id => `<a href="#cve=${id}">${esc(id)}</a>`;
+const envs = () => S.flatMap(s => s.environments.map(e => ({s, e})));
+const stateCounts = list => Object.fromEntries(Object.keys(STL).map(st => [st, list.filter(x => x.e.state === st).length]));
+function allCves() {
+  const m = {};
+  S.forEach(s => s.findings.forEach(f => { const c = m[f.cve] ||= {id: f.cve, severity: f.severity, cvss: f.cvss, packages: new Set(), services: new Set(), production: new Set(), fixable: false};
+    c.packages.add(f.package); c.services.add(s.name); c.fixable ||= !!f.fixed; if (f.clusters.some(x => CL[x].stage === "prd")) c.production.add(s.name); }));
+  return Object.values(m).sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || b.services.size - a.services.size || b.cvss - a.cvss);
+}
+function cveTable(list) {
+  return `<table><thead><tr><th>CVE</th><th>Severity</th><th class="num">CVSS</th><th>Package</th><th class="num">Services</th><th class="num">In production</th><th>Fix available</th></tr></thead><tbody>${
+    list.map(c => `<tr><td>${cveLink(c.id)}</td><td>${sev(c.severity[0].toUpperCase(), c.severity)}</td><td class="num">${c.cvss ?? ""}</td><td>${esc([...c.packages].join(", "))}</td><td class="num">${c.services.size}</td><td class="num">${c.production.size}</td><td>${c.fixable ? "yes" : "no"}</td></tr>`).join("")}</tbody></table>`;
+}
+function envTable(list, withService) {
+  return `<table><thead><tr>${withService ? "<th>Service</th>" : "<th>Cluster</th>"}<th>GitOps desired</th><th>Running</th><th>Sync</th><th>Health</th><th>State</th><th>Detail</th>${sevHead}</tr></thead><tbody>${
+    list.map(({s, e}) => `<tr><td>${withService ? svcLink(s) : clusterLink(e.cluster)}</td><td title="${esc(e.gitopsPath || "")}">${esc(shortV(e.desiredVersion)) || "<span class='muted'>not in GitOps</span>"}</td>
+      <td title="${esc(e.image || "")}">${esc(shortV(e.liveVersion)) || "<span class='muted'>not deployed</span>"}</td><td>${esc(e.sync || "—")}</td><td>${esc(e.health)}</td><td>${statePill(e.state)}</td>
+      <td class="muted">${esc(e.message)}</td>${sevCells(e.vulnerabilities)}</tr>`).join("")}</tbody></table>`;
+}
+function clusterSummary() {
+  return `<table><thead><tr><th>Cluster</th><th>Stage · ring</th><th class="num">Services</th>${Object.keys(STL).map(st => `<th class="num">${esc(STL[st])}</th>`).join("")}${sevHead}</tr></thead><tbody>${
+    Object.keys(CL).map(c => { const list = envs().filter(x => x.e.cluster === c), n = stateCounts(list), v = {critical: 0, high: 0, medium: 0, low: 0};
+      list.forEach(x => SEV.forEach(k => v[k] += x.e.vulnerabilities[k]));
+      return `<tr><td>${clusterLink(c)}</td><td>${esc(CL[c].stage)} · ${esc(CL[c].ring)}</td><td class="num">${list.length}</td>${Object.keys(STL).map(st => `<td class="num">${n[st]}</td>`).join("")}${sevCells(v)}</tr>`; }).join("")}</tbody></table>`;
+}
 const docLinks = docs => Object.entries(docs).map(([d, u]) => u ? `<a href="${esc(u)}">${esc(d)}</a>` : esc(d)).join(" · ");
 const note = () => `<p class="note">Catalog snapshot ${esc(DATA.catalogCommit)} · generated ${esc(DATA.generatedAt)} · ${esc(DATA.notes)}</p>`;
 
@@ -104,7 +134,11 @@ const views = {
   overview() {
     const t = roll(S), inScope = S.filter(s => s.readiness.inScope), staged = inScope.filter(current), ready = staged.filter(s => current(s).passed);
     return `${note()}${kpis([["Platform capabilities", DATA.counts.platformCapabilities], ["Applications", DATA.counts.applications], ["Services", DATA.counts.services], ["Teams", DATA.counts.teams], ["Readiness criteria", DATA.counts.criteria]])}
-      <div class="two"><div class="card"><div class="k">Open vulnerabilities (mock)</div><div class="v">${t.open}</div>${sevBar(t)}
+      <div class="two"><div class="card"><div class="k">Deployments in sync with GitOps</div><div class="v">${stateCounts(envs())["in-sync"]} / ${envs().length}</div>
+        <p>${Object.entries(stateCounts(envs())).filter(([st, n]) => st !== "in-sync" && n).map(([st, n]) => `${statePill(st)} ${n}`).join(" &nbsp; ")}</p>
+        <p class="muted">GitOps desired version against what Argo CD reports running, on ${Object.keys(CL).length} clusters. <a href="#deployments">Deployments</a></p></div>
+      <div class="card"><div class="k">Most widespread critical CVEs</div>${allCves().filter(c => c.severity === "critical").slice(0, 4).map(c => `<div>${cveLink(c.id)} <span class="muted">${esc([...c.packages].join(", "))} · ${c.services.size} services</span></div>`).join("") || "<p class='muted'>none</p>"}</div></div>
+      <div class="two"><div class="card"><div class="k">Open vulnerabilities in running images</div><div class="v">${t.open}</div>${sevBar(t)}
         <div>${SEV.map(k => `${sev(t[k], k)} ${k}`).join(" &nbsp; ")}</div><p class="muted">${t.withCritical} services have critical findings. <a href="#security">Global summary</a></p></div>
       <div class="card"><div class="k">Service Readiness</div><div class="v">${ready.length} / ${staged.length}</div>
         <p class="muted">services ready for their current stage. ${inScope.length} of ${S.length} services are subject to criteria (service type <code>kairos-component</code>). <a href="#readiness">Details</a></p></div></div>
@@ -115,8 +149,26 @@ const views = {
     return `${note()}${kpis([["Critical", t.critical], ["High", t.high], ["Medium", t.medium], ["Low", t.low], ["Open findings", t.open], ["Services with critical", t.withCritical]])}${sevBar(t)}
       <div class="two"><div><h2>By platform capability or application</h2>${rollTable(groupBy(s => s.parentKind ? s.parentKind + ":" + s.parent : "none", (k, s) => s.parent ? parentLink(s) : "<span class='muted'>No parent</span>"), "Parent")}</div>
       <div><h2>By owning team</h2>${rollTable(groupBy(s => s.team, k => teamLink(k)), "Team")}</div></div>
-      <h2>By cluster</h2>${rollTable(Object.keys(DATA.clusters).map(c => [`<a href="#cluster=${c}">${esc(DATA.clusters[c].title)}</a>`, S.filter(s => s.deployments.some(d => d.cluster === c))]), "Cluster")}
+      <p class="muted">Findings are Microsoft Defender for Containers results from ACR for the image each cluster runs, as listed by Argo CD. A service counts a CVE once even when several clusters run affected images.</p>
+      <h2>By cluster</h2>${clusterSummary()}
+      <h2>Critical and high CVEs across the fleet</h2>${cveTable(allCves().filter(c => ["critical", "high"].includes(c.severity)))}
       <h2>All services by risk</h2>${serviceTable([...S].sort((a, b) => risk(b.vulnerabilities) - risk(a.vulnerabilities)))}`;
+  },
+  deployments() {
+    const n = stateCounts(envs()), opts = (pairs, label) => `<option value="">${label}</option>` + pairs.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    return `${note()}${kpis([["Deployments", envs().length], ...Object.keys(STL).map(st => [STL[st], n[st]])])}
+      <p class="muted">The desired version comes from GitOps (<code>&lt;stage&gt;/rings/&lt;ring&gt;/chart-versions/&lt;service&gt;.yaml</code>). Running version, sync and health come from Argo CD. Services marked <span class="pill">live</span> also run as workloads in the sandbox demo.</p>
+      ${clusterSummary()}
+      <h2>Services by cluster</h2><div class="filters"><input id="dq" placeholder="Search services"><select id="dstate">${opts(Object.entries(STL), "All states")}</select>
+      <select id="dcluster">${opts(Object.keys(CL).map(c => [c, CL[c].title]), "All clusters")}</select></div><div id="dlist"></div>`;
+  },
+  cve(id) {
+    const c = allCves().find(x => x.id === id); if (!c) return `<p>Unknown CVE ${esc(id)}</p>`;
+    const rows = S.flatMap(s => s.findings.filter(f => f.cve === id).map(f => ({s, f})));
+    return `${note()}<h2>${esc(id)} ${sev(c.severity[0].toUpperCase() + c.severity.slice(1), c.severity)}</h2>
+      <p>CVSS ${c.cvss ?? "n/a"} · ${c.services.size} services · ${c.production.size} in production · <a href="https://nvd.nist.gov/vuln/detail/${esc(id)}">NVD entry</a></p>
+      <table><thead><tr><th>Service</th><th>Owning team</th><th>Package</th><th>Installed</th><th>Fixed in</th><th>Running on</th></tr></thead><tbody>${
+        rows.map(({s, f}) => `<tr><td>${svcLink(s)}</td><td>${teamLink(s.team)}</td><td>${esc(f.package)}</td><td>${esc(f.installed)}</td><td>${esc(f.fixed) || "<span class='muted'>no fix yet</span>"}</td><td>${f.clusters.map(clusterLink).join(", ")}</td></tr>`).join("")}</tbody></table>`;
   },
   readiness() {
     const inScope = S.filter(s => s.readiness.inScope), missed = {};
@@ -150,9 +202,13 @@ const views = {
     return `${note()}<h2>${esc(s.title)} <span class="pill">${esc(s.type)}</span> <span class="pill">${esc(s.lifecycle)}</span></h2><p>${esc(s.description)}</p>
       <table><tbody><tr><th>Owning team</th><td>${teamLink(s.team)}</td><th>Belongs to</th><td>${parentLink(s)} ${s.availability ? `<span class="pill">${esc(stageLabel(s.availability))}</span>` : ""}</td></tr>
       <tr><th>Repository</th><td>${s.repository ? `<a href="${esc(s.repository)}">${esc(s.repository)}</a>` : `<span class="muted">not published</span>`}</td><th>Managed</th><td>${s.managed ? "yes" : "no"}</td></tr></tbody></table>
-      <h2>Security insights <span class="muted">(mock, last scan ${esc(v.lastScanned)})</span></h2>
-      ${kpis([["Active deployments", s.deployments.length], ["Open findings", v.open], ["Critical", sev(v.critical, "critical")], ["High", sev(v.high, "high")], ["Medium", sev(v.medium, "medium")], ["Low", sev(v.low, "low")]])}
-      <h3>Runs on</h3><table><thead><tr><th>Cluster</th><th>Health</th><th>Sync</th></tr></thead><tbody>${s.deployments.map(d => `<tr><td><a href="#cluster=${d.cluster}">${esc(DATA.clusters[d.cluster].title)}</a></td><td>${esc(d.status)}</td><td>${esc(d.sync)}</td></tr>`).join("")}</tbody></table>
+      <h2>Deployments ${LIVE.has(s.name) ? `<span class="pill">live in the sandbox demo</span>` : ""}</h2>
+      ${s.environments.length ? envTable(s.environments.map(e => ({s, e})), false) : `<p class="muted">No GitOps version and no Application on any cluster.</p>`}
+      <h2>Vulnerabilities in running images <span class="muted">(Defender for Containers via ACR, last scan ${esc(v.lastScanned || "n/a")})</span></h2>
+      ${kpis([["Open findings", v.open], ["Fix available", v.fixable], ["Critical", sev(v.critical, "critical")], ["High", sev(v.high, "high")], ["Medium", sev(v.medium, "medium")], ["Low", sev(v.low, "low")], ["In production", `${v.production.critical}/${v.production.high}/${v.production.medium}/${v.production.low}`]])}
+      ${s.findings.length ? `<table><thead><tr><th>CVE</th><th>Severity</th><th class="num">CVSS</th><th>Package</th><th>Type</th><th>Installed</th><th>Fixed in</th><th>Running on</th></tr></thead><tbody>${
+        s.findings.map(f => `<tr><td>${cveLink(f.cve)}</td><td>${sev(f.severity[0].toUpperCase(), f.severity)}</td><td class="num">${f.cvss ?? ""}</td><td>${esc(f.package)}</td><td>${esc(f.category)}</td><td>${esc(f.installed)}</td>
+          <td>${esc(f.fixed) || "<span class='muted'>no fix yet</span>"}</td><td>${f.clusters.map(clusterLink).join(", ")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">No findings for the images this service runs.</p>`}
       <h2>Service Readiness</h2>${r.inScope ? (r.currentStage ? "" : `<p class="muted">The service has no parent application or platform capability, so its current stage is unknown.</p>`) + `<div class="two">${stages}</div>` : `<p class="muted">No readiness criteria apply to service type ${esc(s.type)}.</p>`}`;
   },
   team(t) { const list = S.filter(s => s.team === t), x = roll(list); return `${note()}<h2>${esc(DATA.teams[t]?.title || t)}</h2><p class="muted">${esc(DATA.teams[t]?.description)}</p>${kpis([["Services", list.length], ["Critical", x.critical], ["High", x.high], ["Open findings", x.open]])}${serviceTable(list)}`; },
@@ -163,7 +219,12 @@ const views = {
     return `${note()}<h2>${esc(p.title)} <span class="pill">${kind === "application" ? "Application" : "Platform capability"}</span> <span class="pill">${esc(stageLabel(p.availability))}</span></h2><p class="muted">${esc(p.description || "")}</p><p>Owning team: ${teamLink(p.team)}</p>${docs}
       ${kpis([["Services", list.length], ["Critical", x.critical], ["High", x.high], ["Open findings", x.open]])}${serviceTable(list)}`;
   },
-  cluster(c) { const list = S.filter(s => s.deployments.some(d => d.cluster === c)); return `${note()}<h2>${esc(DATA.clusters[c]?.title || c)}</h2>${kpis([["Deployed services", list.length], ["Degraded", list.filter(s => s.deployments.find(d => d.cluster === c).status === "Degraded").length]])}${serviceTable(list)}`; },
+  cluster(c) {
+    if (!CL[c]) return `<p>Unknown cluster ${esc(c)}</p>`;
+    const list = envs().filter(x => x.e.cluster === c).sort((a, b) => Object.keys(STL).indexOf(a.e.state) - Object.keys(STL).indexOf(b.e.state)), n = stateCounts(list);
+    return `${note()}<h2>${esc(CL[c].title)} <span class="pill">mock</span></h2><p class="muted">${esc(CL[c].region)} · stage ${esc(CL[c].stage)} · ring ${esc(CL[c].ring)} · GitOps path <code>${esc(CL[c].stage)}/rings/${esc(CL[c].ring)}/chart-versions/</code></p>
+      ${kpis([["Services", list.length], ...Object.keys(STL).map(st => [STL[st], n[st]])])}${envTable(list, true)}`;
+  },
 };
 
 const afterRender = {
@@ -173,6 +234,17 @@ const afterRender = {
       document.getElementById("list").innerHTML = serviceTable(S.filter(s => (!q || (s.name + " " + s.title + " " + s.description).toLowerCase().includes(q)) && (!type || s.type === type) && (!life || s.lifecycle === life) && (!team || s.team === team)
         && (!rd || (rd === "ready" ? current(s)?.passed : rd === "not ready" ? current(s) && !current(s).passed : !s.readiness.inScope))));
       document.querySelectorAll("#list table").forEach(sortable); };
+    f.forEach(x => x.oninput = apply); apply();
+  },
+  deployments() {
+    const f = ["dq", "dstate", "dcluster"].map(id => document.getElementById(id)), cols = Object.keys(CL);
+    const cell = (s, c) => { const e = s.environments.find(x => x.cluster === c); if (!e) return `<td class="muted">—</td>`;
+      return `<td title="GitOps ${esc(shortV(e.desiredVersion) || "none")}${e.message ? " · " + esc(e.message) : ""}">${statePill(e.state)}<br><span class="muted">${esc(shortV(e.liveVersion) || "")}</span></td>`; };
+    const apply = () => { const [q, st, cl] = f.map(x => x.value);
+      const list = S.filter(s => (!q || (s.name + " " + s.title).toLowerCase().includes(q.toLowerCase())) && s.environments.some(e => (!st || e.state === st) && (!cl || e.cluster === cl)));
+      document.getElementById("dlist").innerHTML = `<table><thead><tr><th>Service</th><th>Belongs to</th><th>Owning team</th>${cols.map(c => `<th>${esc(CL[c].title)}</th>`).join("")}</tr></thead><tbody>${
+        list.map(s => `<tr><td>${svcLink(s)}${LIVE.has(s.name) ? ` <span class="pill">live</span>` : ""}</td><td>${parentLink(s)}</td><td>${teamLink(s.team)}</td>${cols.map(c => cell(s, c)).join("")}</tr>`).join("")}</tbody></table>`;
+      document.querySelectorAll("#dlist table").forEach(sortable); };
     f.forEach(x => x.oninput = apply); apply();
   },
 };
