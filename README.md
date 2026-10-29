@@ -26,7 +26,7 @@ OpenChoreo's portal labels Backstage Domains as **Namespaces** and Systems as **
 | Application | Project (System) in namespace `nexus-applications` | Catalog > Project |
 | Service | Component in its parent's namespace, or `nexus-standalone-services` | Catalog > Component. The description starts with the vulnerability counts and current-stage readiness |
 | Team | Group in namespace `nexus-teams` | Catalog > Group. The ownership card lists what the team owns |
-| Service Readiness and security insights | Resource `<service>-insights` (type `service-insights`) in `nexus-insights` | Linked from each service's relations graph. Lists readiness per stage, missing criteria and vulnerability counts |
+| Service Readiness and security insights | Resource `<service>-insights` (type `service-insights`) next to its service | In the parent Project's contents and the service's relations graph. Lists readiness per stage, missing criteria and vulnerability counts |
 | Global vulnerability summary | Resource `nexus-vulnerability-summary` | Catalog > Resource |
 | Service Readiness summary | Resource `nexus-service-readiness-summary` | Catalog > Resource |
 | Runs on | Resources `nexus-{dev,tst,prd}-cluster`, linked by `dependsOn` | Service relations graph |

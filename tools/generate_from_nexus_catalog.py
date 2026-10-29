@@ -365,7 +365,7 @@ def build(args):
         (NS_APPLICATIONS, "Nexus · Applications", f"{len(applications)} applications and the services that belong to them."),
         (NS_STANDALONE, "Nexus · Services without a parent", "Services with no belongsTo application or platform capability."),
         (NS_TEAMS, "Nexus · Teams", f"{len(teams)} owning teams."),
-        (NS_INSIGHTS, "Nexus · Readiness and Security Insights", "Per-service and global Service Readiness and vulnerability summaries."),
+        (NS_INSIGHTS, "Nexus · Readiness and Security Insights", "Global Service Readiness and vulnerability summaries. Per-service insights sit next to each service."),
         (NS_RUNTIME, "Nexus · Runtime clusters (mock)", "Clusters the services run on (mock)."),
     ]
     for name, title, desc in domains:
@@ -390,7 +390,10 @@ def build(args):
         roll = rollup(members)
         availability = item.get("availability")
         kind_label = "Platform capability" if kind == "platform-capability" else "Application"
-        annotations = {"nexus.demo/entity-kind": kind, "nexus.demo/availability": availability or "unknown"}
+        # The portal's Project Contents card lists Components and Resources whose spec.system is this
+        # name, in the namespace named by this annotation.
+        annotations = {"nexus.demo/entity-kind": kind, "nexus.demo/availability": availability or "unknown",
+                       "openchoreo.io/namespace": namespace}
         links = [{"url": f"{dashboard}#parent={kind}:{name}", "title": "Readiness and vulnerabilities"}]
         if kind == "platform-capability" and link_sources:
             annotations["backstage.io/source-location"] = f"url:{bitbucket}/nexus-catalog/src/main/docs/platform-capabilities/{name}/"
@@ -438,7 +441,7 @@ def build(args):
         spec = {"type": r["type"], "lifecycle": r["lifecycle"], "owner": team_ref(r["team"]),
                 "dependsOn": [f"resource:{NS_RUNTIME}/{d['cluster']}" for d in r["deployments"]]}
         if r["parent"]:
-            spec["system"] = f"{r['namespace']}/{r['parent']}"
+            spec["system"] = r["parent"]
         entities.append(entity(
             "Component", r["name"], r["namespace"], spec,
             title=r["title"],
@@ -473,11 +476,12 @@ def build(args):
         res_spec = {"type": "service-insights", "owner": team_ref(r["team"]),
                     "dependencyOf": [f"component:{r['namespace']}/{r['name']}"]}
         if r["parent"]:
-            res_spec["system"] = f"{r['namespace']}/{r['parent']}"
+            res_spec["system"] = r["parent"]
         entities.append(entity(
-            "Resource", f"{r['name']}-insights", NS_INSIGHTS, res_spec,
+            "Resource", f"{r['name']}-insights", r["namespace"], res_spec,
             title=f"{r['title']} · readiness and security",
             description="\n".join(lines),
+            annotations={"openchoreo.io/project": r["parent"]} if r["parent"] else None,
             tags=[readiness_tag(r), vuln_tag(v), "mock-vulnerability-data"],
             links=[{"url": f"{dashboard}#service={r['name']}", "title": "Full readiness and vulnerability report"}]
                   + ([{"url": r["repository"], "title": "Repository"}] if r["repository"] else []),
